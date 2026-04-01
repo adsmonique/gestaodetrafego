@@ -2148,6 +2148,7 @@
       <!-- Tabs -->
       <div class="detalhe-tabs">
         <button class="detalhe-tab active" onclick="switchTab('historico')">📝 Histórico</button>
+        <button class="detalhe-tab" onclick="switchTab('timeline')">🕐 Timeline</button>
         <button class="detalhe-tab" onclick="switchTab('onboarding')">🚀 Onboarding</button>
         <button class="detalhe-tab" onclick="switchTab('acessos')">🔑 Acessos</button>
         <button class="detalhe-tab" onclick="switchTab('tarefas')">✅ Tarefas</button>
@@ -2195,6 +2196,19 @@
           <div id="hist-count" style="font-size:12px;color:var(--text3);margin-left:auto"></div>
         </div>
         <div id="historico-list"></div>
+      </div>
+
+      <!-- Timeline -->
+      <div id="tab-timeline" style="display:none">
+        <div class="card" style="padding:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+            <div>
+              <div style="font-family:'Playfair Display',serif;font-size:15px;font-weight:700">🕐 Timeline do Cliente</div>
+              <div style="font-size:12px;color:var(--text3);margin-top:3px">Tudo que aconteceu com este cliente, em ordem cronológica</div>
+            </div>
+          </div>
+          <div id="timeline-list"></div>
+        </div>
       </div>
 
       <!-- Onboarding -->
@@ -2372,6 +2386,7 @@
             <option>Negociação</option>
             <option>Inativo</option>
             <option>Encerrado</option>
+            <option>Entregue</option>
           </select>
         </div>
         <div class="form-group">
@@ -3024,6 +3039,33 @@ function tempoCliente(inicio) {
   return rem > 0 ? `${years}a ${rem}m` : `${years} ano${years > 1 ? 's' : ''}`;
 }
 
+// Retorna true se o cliente é de Site/Landing Page (não tráfego)
+function isSiteCliente(c) {
+  if (!c) return false;
+  const servicos = Array.isArray(c.servico) ? c.servico : (c.servico ? [c.servico] : []);
+  const temTrafego = servicos.some(s => ['Meta Ads','Google Ads','Google Business Profile','TikTok Ads','LinkedIn Ads','Gestão Completa'].includes(s));
+  const temSite = servicos.some(s => ['Site','Landing Page'].includes(s));
+  return temSite && !temTrafego;
+}
+
+// Registra automaticamente um evento no histórico do cliente
+function logEvento(clienteId, tipo, texto) {
+  if (!DB.anotacoes) DB.anotacoes = [];
+  if (!DB.nextId) DB.nextId = {};
+  if (!DB.nextId.anotacoes) DB.nextId.anotacoes = 1;
+  const agora = new Date();
+  DB.anotacoes.push({
+    id: DB.nextId.anotacoes++,
+    cliente: clienteId,
+    tipo,
+    data: agora.toISOString().split('T')[0],
+    hora: agora.toTimeString().slice(0,5),
+    criadoEm: agora.toISOString(),
+    texto,
+    auto: true // marcado como evento automático
+  });
+}
+
 function getNomeMes(offset = 0) {
   const d = new Date();
   d.setMonth(d.getMonth() + offset);
@@ -3236,10 +3278,20 @@ function salvarCliente() {
 
   if (editingId) {
     const idx = DB.clientes.findIndex(x => x.id == editingId);
+    const anterior = DB.clientes[idx];
+    // Item 5: detectar mudança de valor e guardar histórico
+    if (anterior && anterior.valor !== data.valor && anterior.valor > 0) {
+      if (!data.historicoValores) data.historicoValores = anterior.historicoValores || [];
+      data.historicoValores.push({ valor: anterior.valor, ate: new Date().toISOString().split('T')[0] });
+      // Item 8: log automático
+      logEvento(data.id, 'alteracao', `💰 Valor alterado: ${fmt(anterior.valor)} → ${fmt(data.valor)}`);
+    }
     if (idx > -1) DB.clientes[idx] = data;
     toast('Cliente atualizado!');
   } else {
     DB.clientes.push(data);
+    // Item 8: log novo cliente
+    logEvento(data.id, 'geral', `🎉 Cliente cadastrado — ${data.empresa}`);
     toast('Cliente cadastrado!');
   }
 
@@ -3689,14 +3741,15 @@ function renderClientes() {
     nichoSel.value = current;
   }
 
-  // Tempo médio summary
+  // Tempo médio summary — SOMENTE clientes de tráfego (não site)
   const ativos = DB.clientes.filter(c => c.status === 'Ativo' && c.inicio);
+  const ativosTrafego = ativos.filter(c => !isSiteCliente(c));
   const now = new Date();
-  const diasAtivos = ativos.map(c => Math.floor((now - new Date(c.inicio)) / 86400000));
+  const diasAtivos = ativosTrafego.map(c => Math.floor((now - new Date(c.inicio)) / 86400000));
   const mediaDias = diasAtivos.length > 0 ? Math.floor(diasAtivos.reduce((s,d) => s+d, 0) / diasAtivos.length) : 0;
   const mediaMeses = Math.floor(mediaDias / 30);
   // +3 months filter
-  const ativos3m = ativos.filter(c => Math.floor((now - new Date(c.inicio)) / 86400000) >= 90);
+  const ativos3m = ativosTrafego.filter(c => Math.floor((now - new Date(c.inicio)) / 86400000) >= 90);
   const dias3m = ativos3m.map(c => Math.floor((now - new Date(c.inicio)) / 86400000));
   const media3mDias = dias3m.length > 0 ? Math.floor(dias3m.reduce((s,d) => s+d, 0) / dias3m.length) : 0;
   const media3mMeses = Math.floor(media3mDias / 30);
@@ -3750,6 +3803,9 @@ function renderClientes() {
   if (filterStatus) list = list.filter(c => c.status === filterStatus);
   if (filterNicho) list = list.filter(c => c.nicho == filterNicho);
 
+  // Numbering: count only Ativo clients in original order for display
+  const ativosOrdem = DB.clientes.filter(c => c.status === 'Ativo').map(c => c.id);
+
   const tbody = document.getElementById('tabela-clientes');
   if (list.length === 0) {
     tbody.innerHTML = '<tr><td colspan="10"><div class="empty-state"><div class="empty-state-icon">👥</div><div class="empty-state-text">Nenhum cliente encontrado</div></div></td></tr>';
@@ -3757,25 +3813,27 @@ function renderClientes() {
   }
 
   tbody.innerHTML = list.map(c => {
-    // Contract alert logic
+    // Contract alert — somente tráfego, não site
     let contratoAlert = '';
-    if (c.inicio && c.duracao) {
+    if (!isSiteCliente(c) && c.inicio && c.duracao) {
       const fim = new Date(c.inicio);
       fim.setMonth(fim.getMonth() + parseInt(c.duracao));
       const diff = Math.ceil((fim - new Date()) / 86400000);
       if (diff >= 0 && diff <= 30) contratoAlert = `<span class="badge badge-yellow" style="margin-left:4px">🔔 Renovar contrato</span>`;
       else if (diff < 0 && diff >= -31) contratoAlert = `<span class="badge badge-red" style="margin-left:4px">⚠️ Última parcela</span>`;
     }
-    const statusCors = { Ativo:'var(--green)', Pausado:'var(--yellow)', Negociação:'var(--blue)', Inativo:'var(--text3)', Encerrado:'var(--red)' };
+    const statusCors = { Ativo:'var(--green)', Pausado:'var(--yellow)', Negociação:'var(--blue)', Inativo:'var(--text3)', Encerrado:'var(--red)', Entregue:'var(--accent2)' };
     const sc = statusCors[c.status] || 'var(--text3)';
+    const num = c.status === 'Ativo' ? ativosOrdem.indexOf(c.id) + 1 : null;
+    const numBadge = num ? `<span style="display:inline-block;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;font-size:10px;font-weight:700;line-height:20px;text-align:center;margin-right:6px;flex-shrink:0">${num}</span>` : '';
     return `<tr>
-    <td><div class="name-cell" style="cursor:pointer;color:var(--accent2)" onclick="abrirDetalheCliente(${c.id})">${c.nome}${contratoAlert}</div></td>
+    <td><div class="name-cell" style="cursor:pointer;color:var(--accent2);display:flex;align-items:center" onclick="abrirDetalheCliente(${c.id})">${numBadge}${c.nome}${contratoAlert}</div></td>
     <td>${c.empresa}</td>
     <td>${getNichoName(c.nicho)}</td>
     <td>${Array.isArray(c.servico) ? c.servico.map(s => `<span class="badge badge-purple" style="margin:1px">${s}</span>`).join('') : (c.servico ? `<span class="badge badge-purple">${c.servico}</span>` : '—')}</td>
     <td style="color:var(--green);font-weight:600">${fmt(c.valor)}</td>
-    <td>${tempoCliente(c.inicio)}</td>
-    <td>${c.duracao ? c.duracao + ' mes' + (c.duracao > 1 ? 'es' : '') : '—'}</td>
+    <td>${isSiteCliente(c) ? '<span style="color:var(--text3);font-size:12px">—</span>' : tempoCliente(c.inicio)}</td>
+    <td>${isSiteCliente(c) ? '<span style="color:var(--text3);font-size:12px">—</span>' : (c.duracao ? c.duracao + ' mes' + (c.duracao > 1 ? 'es' : '') : '—')}</td>
     <td>${Array.isArray(c.otimizacao) ? c.otimizacao.join(', ') : (c.otimizacao || '—')}</td>
     <td>
       <select class="fin-status-select" style="border-color:${sc};color:${sc}" onchange="alterarStatusCliente(${c.id},this.value)">
@@ -3784,6 +3842,7 @@ function renderClientes() {
         <option value="Negociação"  ${c.status==='Negociação' ?'selected':''}>🔵 Negociação</option>
         <option value="Inativo"     ${c.status==='Inativo'    ?'selected':''}>⚪ Inativo</option>
         <option value="Encerrado"   ${c.status==='Encerrado'  ?'selected':''}>🔴 Encerrado</option>
+        <option value="Entregue"    ${c.status==='Entregue'   ?'selected':''}>✅ Entregue</option>
       </select>
     </td>
     <td>
@@ -4240,6 +4299,7 @@ function deletarNicho(id) {
 function alterarStatusCliente(id, novoStatus) {
   const c = DB.clientes.find(x => x.id == id);
   if (!c) return;
+  const statusAnterior = c.status;
   c.status = novoStatus;
   // Auto-gerar entrada financeira se virou Ativo
   if (novoStatus === 'Ativo' && c.valor > 0) {
@@ -4253,9 +4313,11 @@ function alterarStatusCliente(id, novoStatus) {
         vencimento: `${y}-${m}-${String(c.vencimento||10).padStart(2,'0')}`,
         pagamento: '', forma: '', status: 'Pendente', obs: ''
       });
-      toast('✅ Entrada financeira gerada para ' + c.nome);
     }
   }
+  // Item 8: log automático
+  const statusEmoji = { Ativo:'🟢', Pausado:'⏸️', Negociação:'🔵', Inativo:'⚪', Encerrado:'🔴', Entregue:'✅' };
+  logEvento(c.id, 'alteracao', `Status: ${statusEmoji[statusAnterior]||''} ${statusAnterior} → ${statusEmoji[novoStatus]||''} ${novoStatus}`);
   saveDB();
   renderClientes();
   updateBadges();
@@ -4267,10 +4329,12 @@ function alterarStatusFin(id, novoStatus) {
   f.status = novoStatus;
   if (novoStatus === 'Pago' && !f.pagamento) {
     f.pagamento = new Date().toISOString().split('T')[0];
+    // Item 8: log automático de pagamento
+    logEvento(f.cliente, 'resultado', `💳 Pagamento recebido: ${fmt(f.valor)} — ${fmtMonth(f.mes)}`);
+    saveDB();
   }
   saveDB();
   updateBadges();
-  // Refresh whichever tab is currently visible
   if (document.getElementById('fin-tab-balanco')?.style.display !== 'none') renderBalanco();
   if (document.getElementById('fin-tab-entradas')?.style.display !== 'none') renderFinanceiro();
   const label = { Pendente:'⏳ Pendente', Pago:'✅ Pago', Atrasado:'⚠️ Atrasado', Cancelado:'Cancelado' };
@@ -4299,6 +4363,7 @@ function gerarEntradasCliente(clienteData) {
 // ===== GERAR COBRANÇAS =====
 function gerarCobrancasMes() {
   const mes = getCurrentMonth();
+  // Somente clientes Ativo — Pausado/Encerrado/Inativo/Entregue não entram
   const ativos = DB.clientes.filter(c => c.status === 'Ativo');
   let criados = 0;
   ativos.forEach(c => {
@@ -4488,9 +4553,37 @@ function renderAgenda() {
           <div class="agenda-day-name">${nome}</div>
           <div style="font-size:11px;color:${isToday?'var(--accent2)':'var(--text3)'};margin-top:1px">${dayNum} de ${monthShort}</div>
         </div>
-        ${isToday ? '<span class="agenda-today-tag">Hoje</span>' : `<span class="agenda-count">${clients.length} cliente${clients.length!==1?'s':''}</span>`}
+        <div style="display:flex;align-items:center;gap:4px">
+          ${isToday ? '<span class="agenda-today-tag">Hoje</span>' : `<span class="agenda-count">${clients.length} cliente${clients.length!==1?'s':''}</span>`}
+          <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 6px" title="Adicionar cliente neste dia" onclick="adicionarClienteNaDia('${nome}')">+</button>
+        </div>
       </div>
-      ${clientsHtml}
+      ${clients.map(c => {
+        const servicos = Array.isArray(c.servico) ? c.servico.join(' · ') : (c.servico||'');
+        const status = DB.otimFeitas[dateStr][c.id] || null;
+        const isRealizado = status === 'realizado';
+        const isAdiado = status === 'adiado';
+        const statusIcon = isRealizado ? '✅' : isAdiado ? '⏭️' : '⬜';
+        return `<div class="agenda-client-item" style="${isRealizado?'opacity:0.55':''}">
+          <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+            <span style="font-size:16px;cursor:pointer;line-height:1" title="⬜ Pendente → ✅ Realizado → ⏭️ Adiado"
+              onclick="ciclarStatusOtim('${dateStr}',${c.id})">${statusIcon}</span>
+            ${isAdiado?`<span style="font-size:9px;color:var(--yellow);font-weight:700">ADIADO</span>`:''}
+          </div>
+          <div class="agenda-client-info" style="cursor:pointer" onclick="abrirDetalheCliente(${c.id})">
+            <div class="agenda-client-name" style="${isRealizado?'text-decoration:line-through;color:var(--text3)':isAdiado?'color:var(--yellow)':''}">${c.nome}</div>
+            <div class="agenda-client-empresa">${c.empresa}</div>
+            <div class="agenda-client-servico">${servicos}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:2px;flex-shrink:0">
+            <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 5px" onclick="editarObsOtim('${dateStr}',${c.id})" title="Anotação do dia">📝</button>
+            <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 5px;color:var(--red)" onclick="moverClienteAgenda(${c.id},'${nome}')" title="Mover para outro dia">↕️</button>
+            <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 5px;color:var(--text3)" onclick="removerClienteDia(${c.id},'${nome}')" title="Remover deste dia">✕</button>
+          </div>
+        </div>
+        ${DB.otimFeitas[dateStr][c.id+'_obs'] ? `<div style="font-size:11px;color:var(--text3);padding:2px 0 4px 30px;font-style:italic">${DB.otimFeitas[dateStr][c.id+'_obs']}</div>` : ''}`;
+      }).join('')}
+      ${clients.length === 0 ? '<div class="agenda-empty">Nenhum cliente</div>' : ''}
       ${tasksHtml}
     </div>`;
   }).join('');
@@ -4500,6 +4593,58 @@ function renderAgenda() {
     <div class="agenda-summary">${summaryHtml}</div>
     <div class="agenda-grid">${gridHtml}</div>
   `;
+}
+
+// Item 7: agenda edit functions
+function adicionarClienteNaDia(diaNome) {
+  const ativos = DB.clientes.filter(c => c.status === 'Ativo');
+  const lista = ativos.map((c,i) => `${i+1}. ${c.nome}`).join('\n');
+  const input = prompt(`Adicionar cliente no ${diaNome}.\nDigite o número:\n\n${lista}`);
+  if (!input) return;
+  const idx = parseInt(input) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= ativos.length) { toast('Número inválido', 'error'); return; }
+  const c = ativos[idx];
+  const otim = Array.isArray(c.otimizacao) ? [...c.otimizacao] : (c.otimizacao ? [c.otimizacao] : []);
+  if (otim.includes(diaNome)) { toast(`${c.nome} já está na ${diaNome}`, 'error'); return; }
+  otim.push(diaNome);
+  c.otimizacao = otim;
+  logEvento(c.id, 'alteracao', `📅 Otimização adicionada: ${diaNome}`);
+  saveDB();
+  renderAgenda();
+  toast(`${c.nome} adicionado na ${diaNome}!`);
+}
+
+function removerClienteDia(clienteId, diaNome) {
+  const c = DB.clientes.find(x => x.id == clienteId);
+  if (!c) return;
+  if (!confirm(`Remover ${c.nome} da ${diaNome}?`)) return;
+  const otim = Array.isArray(c.otimizacao) ? [...c.otimizacao] : (c.otimizacao ? [c.otimizacao] : []);
+  c.otimizacao = otim.filter(d => d !== diaNome);
+  logEvento(c.id, 'alteracao', `📅 Otimização removida: ${diaNome}`);
+  saveDB();
+  renderAgenda();
+  toast(`${c.nome} removido da ${diaNome}`);
+}
+
+function moverClienteAgenda(clienteId, diaAtual) {
+  const c = DB.clientes.find(x => x.id == clienteId);
+  if (!c) return;
+  const dias = ['Segunda','Terça','Quarta','Quinta','Sexta'];
+  const opcoes = dias.filter(d => d !== diaAtual);
+  const lista = opcoes.map((d,i) => `${i+1}. ${d}`).join('\n');
+  const input = prompt(`Mover ${c.nome} de ${diaAtual} para:\n\n${lista}`);
+  if (!input) return;
+  const idx = parseInt(input) - 1;
+  const novoDia = opcoes[idx];
+  if (!novoDia) { toast('Opção inválida', 'error'); return; }
+  const otim = Array.isArray(c.otimizacao) ? [...c.otimizacao] : (c.otimizacao ? [c.otimizacao] : []);
+  const filtered = otim.filter(d => d !== diaAtual);
+  if (!filtered.includes(novoDia)) filtered.push(novoDia);
+  c.otimizacao = filtered;
+  logEvento(c.id, 'alteracao', `📅 Otimização: ${diaAtual} → ${novoDia}`);
+  saveDB();
+  renderAgenda();
+  toast(`${c.nome} movido para ${novoDia}!`);
 }
 
 function toggleRelatorio(mondayKey, clienteId) {
@@ -4735,9 +4880,10 @@ function abrirDetalheCliente(clienteId) {
 }
 
 function switchTab(tab) {
-  const tabs = ['historico','onboarding','acessos','tarefas','mapa'];
+  const tabs = ['historico','timeline','onboarding','acessos','tarefas','mapa'];
   document.querySelectorAll('.detalhe-tab').forEach((t,i) => t.classList.toggle('active', tabs[i] === tab));
   document.getElementById('tab-historico').style.display  = tab === 'historico'  ? 'block' : 'none';
+  document.getElementById('tab-timeline').style.display   = tab === 'timeline'   ? 'block' : 'none';
   document.getElementById('tab-onboarding').style.display = tab === 'onboarding' ? 'block' : 'none';
   document.getElementById('tab-acessos').style.display    = tab === 'acessos'    ? 'block' : 'none';
   document.getElementById('tab-tarefas').style.display    = tab === 'tarefas'    ? 'block' : 'none';
@@ -4746,6 +4892,7 @@ function switchTab(tab) {
   if (tab === 'mapa') renderMapaMental();
   if (tab === 'onboarding') renderOnboarding();
   if (tab === 'acessos') renderAcessos();
+  if (tab === 'timeline') renderTimeline();
 }
 
 function abrirMapaMental() { switchTab('mapa'); }
@@ -4839,6 +4986,7 @@ function renderHistorico() {
     ideia:      { label:'💡 Ideia',      cor:'#f5a623',         bg:'rgba(245,166,35,.12)' },
     alerta:     { label:'🚨 Alerta',     cor:'var(--red)',      bg:'rgba(255,92,124,.12)' },
     geral:      { label:'📌 Geral',      cor:'var(--text3)',    bg:'rgba(255,255,255,.05)'},
+    sistema:    { label:'🤖 Sistema',    cor:'var(--text3)',    bg:'rgba(255,255,255,.03)'},
   };
 
   const container = document.getElementById('historico-list');
@@ -4869,6 +5017,19 @@ function renderHistorico() {
       const cfg = tipoConfig[a.tipo] || tipoConfig.geral;
       const hora = a.hora || (a.criadoEm ? new Date(a.criadoEm).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '');
       const dataFmt = a.data ? new Date(a.data+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'}) : '';
+      // Auto events: compact style
+      if (a.auto) {
+        return `<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);opacity:.7">
+          <div style="width:46px;flex-shrink:0;display:flex;justify-content:center;padding-top:2px">
+            <span style="font-size:13px">🤖</span>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;color:var(--text2)">${a.texto}</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px">📅 ${dataFmt}${hora?' · ⏰ '+hora:''}</div>
+          </div>
+          <button class="action-btn del" onclick="deletarAnotacao(${a.id})" title="Excluir" style="opacity:.4;font-size:11px">🗑️</button>
+        </div>`;
+      }
       return `<div style="display:flex;gap:14px;padding:14px 0;border-bottom:1px solid var(--border)">
         <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex-shrink:0;width:46px">
           <div style="width:36px;height:36px;border-radius:50%;background:${cfg.bg};border:2px solid ${cfg.cor};display:flex;align-items:center;justify-content:center;font-size:16px">
@@ -4895,6 +5056,110 @@ function renderHistorico() {
         <div style="font-size:11px;color:var(--text3)">${items.length} registro${items.length!==1?'s':''}</div>
       </div>
       <div style="padding-left:8px">${cards}</div>
+    </div>`;
+  }).join('');
+}
+
+// ===== TIMELINE =====
+function renderTimeline() {
+  const container = document.getElementById('timeline-list');
+  if (!container) return;
+  const c = DB.clientes.find(x => x.id == detalheClienteId);
+  if (!c) return;
+
+  const eventos = [];
+
+  // Cadastro
+  if (c.inicio) eventos.push({ data: c.inicio, hora:'', tipo:'cadastro', icone:'🎉', cor:'var(--green)', label:'Início', texto:`Cliente cadastrado — ${c.empresa}` });
+
+  // Histórico de valores
+  (c.historicoValores||[]).forEach(h => {
+    eventos.push({ data:h.ate, hora:'', tipo:'valor', icone:'💰', cor:'var(--accent)', label:'Valor alterado', texto:`${fmt(h.valor)} → ${fmt(c.valor)}` });
+  });
+
+  // Anotações manuais
+  const tipoConfig = {
+    otimizacao:{icone:'🔧',cor:'var(--accent)',label:'Otimização'},
+    alteracao:{icone:'⚙️',cor:'var(--blue)',label:'Alteração'},
+    resultado:{icone:'📈',cor:'var(--green)',label:'Resultado'},
+    reuniao:{icone:'🤝',cor:'var(--accent2)',label:'Reunião'},
+    ideia:{icone:'💡',cor:'var(--yellow)',label:'Ideia'},
+    alerta:{icone:'🚨',cor:'var(--red)',label:'Alerta'},
+    geral:{icone:'📌',cor:'var(--text3)',label:'Geral'},
+  };
+  (DB.anotacoes||[]).filter(a => a.cliente == detalheClienteId).forEach(a => {
+    const cfg = tipoConfig[a.tipo]||tipoConfig.geral;
+    eventos.push({ data:a.data, hora:a.hora||'', tipo:a.tipo, icone:cfg.icone, cor:cfg.cor, label:cfg.label, texto:a.texto, auto:a.auto, deletavel:true, id:a.id });
+  });
+
+  // Pagamentos
+  DB.financeiro.filter(f => f.cliente==detalheClienteId && f.status==='Pago' && f.pagamento).forEach(f => {
+    eventos.push({ data:f.pagamento, hora:'', tipo:'pagamento', icone:'💳', cor:'var(--green)', label:'Pagamento', texto:`${fmt(f.valor)} recebido — ${fmtMonth(f.mes)}` });
+  });
+
+  // Tarefas concluídas
+  (DB.tarefas||[]).filter(t => t.cliente==detalheClienteId && t.concluida && t.concluidaEm).forEach(t => {
+    eventos.push({ data:t.concluidaEm, hora:'', tipo:'tarefa', icone:'✅', cor:'var(--green)', label:'Tarefa concluída', texto:`[${t.tipo||'Tarefa'}] ${t.titulo||t.texto}` });
+  });
+
+  // Relatórios enviados
+  Object.entries(DB.relatorios||{}).forEach(([key, rel]) => {
+    if (rel[detalheClienteId]==='enviado') {
+      const dateStr = key.replace('relatorio_','');
+      eventos.push({ data:dateStr, hora:'', tipo:'relatorio', icone:'📊', cor:'var(--blue)', label:'Relatório enviado', texto:`Semana de ${new Date(dateStr+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})}` });
+    }
+  });
+
+  // Sort newest first
+  eventos.sort((a,b) => {
+    const da = (a.data||'0000')+(a.hora||'');
+    const db2 = (b.data||'0000')+(b.hora||'');
+    return db2.localeCompare(da);
+  });
+
+  if (eventos.length === 0) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🕐</div><div class="empty-state-text">Nenhum evento registrado ainda.<br>Tudo que você fizer aparecerá aqui automaticamente.</div></div>`;
+    return;
+  }
+
+  // Group by month
+  const groups = {};
+  eventos.forEach(e => {
+    const mes = (e.data||'').slice(0,7)||'sem-data';
+    if (!groups[mes]) groups[mes] = [];
+    groups[mes].push(e);
+  });
+
+  container.innerHTML = Object.entries(groups).sort((a,b)=>b[0].localeCompare(a[0])).map(([mes, items]) => {
+    const mesLabel = mes==='sem-data' ? 'Sem data' : fmtMonth(mes);
+    const cards = items.map(e => {
+      const dataFmt = e.data ? new Date(e.data+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'}) : '';
+      const horaTag = e.hora && !['','00:00','00:01','00:02','00:03','00:04'].includes(e.hora) ? ` · ⏰ ${e.hora}` : '';
+      const autoTag = e.auto ? `<span style="font-size:9px;color:var(--text3);background:rgba(255,255,255,.06);border-radius:10px;padding:1px 6px;margin-left:4px">auto</span>` : '';
+      const delBtn = e.deletavel ? `<button class="action-btn del" onclick="deletarAnotacao(${e.id});renderTimeline()" title="Remover" style="opacity:.4;font-size:11px;flex-shrink:0">🗑️</button>` : '';
+      return `<div style="display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;width:36px">
+          <div style="width:30px;height:30px;border-radius:50%;background:${e.cor}18;border:2px solid ${e.cor};display:flex;align-items:center;justify-content:center;font-size:13px">${e.icone}</div>
+          <div style="width:2px;flex:1;background:var(--border);min-height:6px;margin-top:3px"></div>
+        </div>
+        <div style="flex:1;min-width:0;padding-top:1px">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">
+            <span style="font-size:10px;font-weight:700;color:${e.cor};background:${e.cor}18;border-radius:20px;padding:1px 8px">${e.label}</span>
+            <span style="font-size:11px;color:var(--text3)">📅 ${dataFmt}${horaTag}</span>
+            ${autoTag}
+          </div>
+          <div style="font-size:13px;color:var(--text);line-height:1.5">${e.texto}</div>
+        </div>
+        ${delBtn}
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:22px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <div style="font-size:13px;font-weight:700;font-family:'Playfair Display',serif">${mesLabel}</div>
+        <div style="flex:1;height:1px;background:var(--border)"></div>
+        <div style="font-size:11px;color:var(--text3)">${items.length} evento${items.length!==1?'s':''}</div>
+      </div>
+      <div style="padding-left:4px">${cards}</div>
     </div>`;
   }).join('');
 }
@@ -5263,6 +5528,7 @@ function salvarTarefa() {
   fecharTarefaForm();
   renderTarefas();
   renderDashboard(); // sync dashboard
+  logEvento(detalheClienteId, 'geral', `📌 Tarefa criada: [${document.getElementById('tarefa-tipo')?.value||'Tarefa'}] ${texto}`);
   toast('Tarefa criada!');
 }
 
