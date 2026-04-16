@@ -3175,6 +3175,15 @@ function openModal(type, itemId = null) {
       ['fin-id','fin-valor','fin-vencimento','fin-pagamento','fin-obs'].forEach(f => document.getElementById(f).value = '');
       document.getElementById('fin-mes').value = getCurrentMonth();
       document.getElementById('fin-status').value = 'Pendente';
+      // Auto-preencher valor do cliente ao selecionar
+      setTimeout(() => {
+        const sel = document.getElementById('fin-cliente');
+        const autoFillValor = () => {
+          const c = DB.clientes.find(x => x.id == sel.value);
+          if (c && c.valor) document.getElementById('fin-valor').value = c.valor;
+        };
+        sel.addEventListener('change', autoFillValor);
+      }, 50);
     }
   }
 
@@ -3283,11 +3292,19 @@ function salvarCliente() {
     if (anterior && anterior.valor !== data.valor && anterior.valor > 0) {
       if (!data.historicoValores) data.historicoValores = anterior.historicoValores || [];
       data.historicoValores.push({ valor: anterior.valor, ate: new Date().toISOString().split('T')[0] });
-      // Item 8: log automático
       logEvento(data.id, 'alteracao', `💰 Valor alterado: ${fmt(anterior.valor)} → ${fmt(data.valor)}`);
+
+      // Sincronizar: atualizar apenas entradas PENDENTES do mês atual em diante
+      const mesAtual = getCurrentMonth();
+      DB.financeiro.forEach(f => {
+        if (f.cliente == data.id && f.status === 'Pendente' && f.mes >= mesAtual) {
+          f.valor = data.valor;
+        }
+      });
+      toast(`💰 Valor atualizado. Entradas pendentes sincronizadas!`);
     }
     if (idx > -1) DB.clientes[idx] = data;
-    toast('Cliente atualizado!');
+    if (!anterior || anterior.valor === data.valor) toast('Cliente atualizado!');
   } else {
     DB.clientes.push(data);
     // Item 8: log novo cliente
@@ -5686,28 +5703,35 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
 
 // ===== INIT =====
 (function initApp() {
-  // SEMPRE começa com os dados embutidos acima (backup do usuário)
-  // Só substitui se o localStorage tiver MAIS clientes (dados mais novos)
+  // PRIORIDADE: localStorage SEMPRE ganha sobre dados embutidos
+  // Os dados embutidos só são usados se o localStorage estiver vazio
+  let usouLocalStorage = false;
   try {
     const saved = localStorage.getItem('trafficOS');
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (parsed && parsed.clientes && parsed.clientes.length > DB.clientes.length) {
+      if (parsed && parsed.clientes && Array.isArray(parsed.clientes)) {
         DB = parsed;
+        usouLocalStorage = true;
       }
-      // Se tiver igual quantidade, mantém os embutidos (mais confiáveis)
     }
   } catch(e) { /* ignora erro de localStorage */ }
 
-  // Migração: garantir campos novos
+  // Migração: garantir campos novos independente da fonte
   if (!DB.despesas) DB.despesas = [];
   if (!DB.onboarding) DB.onboarding = {};
   if (!DB.otimFeitas) DB.otimFeitas = {};
+  if (!DB.acessos) DB.acessos = {};
+  if (!DB.relatorios) DB.relatorios = {};
   if (!Array.isArray(DB.anotacoes)) DB.anotacoes = [];
+  if (!DB.nextId) DB.nextId = {};
   if (!DB.nextId.despesas) DB.nextId.despesas = 1;
   if (!DB.nextId.anotacoes) DB.nextId.anotacoes = 1;
+  if (!DB.nextId.financeiro) DB.nextId.financeiro = 1;
+  if (!DB.nextId.tarefas) DB.nextId.tarefas = 1;
+  if (!DB.nextId.projetos) DB.nextId.projetos = 1;
 
-  // Grava no localStorage para futuras sessões
+  // Grava no localStorage para garantir persistência
   localStorage.setItem('trafficOS', JSON.stringify(DB));
 
   updateBadges();
